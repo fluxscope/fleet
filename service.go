@@ -3,6 +3,7 @@ package fleet
 import "context"
 
 type Service interface {
-	Start(context.Context) error
-	Stop(context.Context) error
+	ID() string
+	Run(context.Context) error
+	Shutdown(context.Context) error
 }

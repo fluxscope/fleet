@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package config;
+option go_package = "github.com/fluxscope/fleet/proto/config;configpb";
+
+message Logging {
+  message Zap {
+    bool production = 1;
+    repeated string context_fields = 2;
+  }
+  string level = 1;
+  Zap zap = 2;
+}
