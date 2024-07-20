@@ -24,11 +24,18 @@ type App struct {
 	onStartingHooks   []Hook
 	onStoppingHooks   []Hook
 	afterStoppedHooks []Hook
-	command           Hook
+	command           Command
 	waitTime          time.Duration
+	configPath        string
 }
 
 type Option func(*App)
+
+func WithConfigPath(path string) Option {
+	return func(a *App) {
+		a.configPath = path
+	}
+}
 
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *App) {
@@ -36,7 +43,7 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-func WithCommand(cmd Hook, waiting time.Duration) Option {
+func WithCommand(cmd Command, waiting time.Duration) Option {
 	return func(app *App) {
 		app.waitTime = waiting
 		app.command = cmd
@@ -142,7 +149,7 @@ func (app *App) loadConfig() error {
 	return nil
 }
 
-func (app *App) RunE() error {
+func (app *App) RunE(args ...string) error {
 	if err := app.loadConfig(); err != nil {
 		return err
 	}
@@ -167,8 +174,8 @@ func (app *App) RunE() error {
 
 	group.Add(run.SignalHandler(context.Background(), syscall.SIGINT, syscall.SIGTERM))
 
-	group.Add(app.HookHandler())
-	group.Add(app.CommandHandler())
+	group.Add(app.hookHandler())
+	group.Add(app.commandHandler())
 
 	// hook
 	for _, h := range app.beforeStartHooks {
@@ -192,7 +199,7 @@ func (app *App) Run() {
 	emperror.Panic(app.RunE())
 }
 
-func (app *App) HookHandler() (execute func() error, interrupt func(error)) {
+func (app *App) hookHandler() (execute func() error, interrupt func(error)) {
 	ctx, cancel := context.WithCancel(app.ctx)
 	return func() error {
 			for _, h := range app.onStartingHooks {
@@ -214,14 +221,14 @@ func (app *App) HookHandler() (execute func() error, interrupt func(error)) {
 		}
 }
 
-func (app *App) CommandHandler() (execute func() error, interrupt func(error)) {
+func (app *App) commandHandler(args ...string) (execute func() error, interrupt func(error)) {
 	ctx, cancel := context.WithCancel(app.ctx)
 	return func() error {
 			if app.command != nil {
 				if app.waitTime != 0 {
 					time.Sleep(app.waitTime)
 				}
-				return app.command(log.Context(ctx, app.logger))
+				return app.command(log.Context(ctx, app.logger), args...)
 			}
 			select {
 			case <-ctx.Done():

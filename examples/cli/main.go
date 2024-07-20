@@ -1,6 +1,9 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"emperror.dev/emperror"
+	"github.com/spf13/cobra"
+)
 
 func main() {
 
@@ -13,12 +16,9 @@ func main() {
 				panic(err)
 			}
 			defer cancel()
-			app.Run()
-			return nil
+			return app.RunE(args...)
 		},
 	}
 
-	if err := rootCmd.Execute(); err != nil {
-		panic(err)
-	}
+	emperror.Panic(rootCmd.Execute())
 }

@@ -12,9 +12,9 @@ var ProvideSet = wire.NewSet(NewApp)
 
 func NewApp() *fleet.App {
 	return fleet.NewApp(
-		fleet.WithCommand(func(ctx context.Context) error {
+		fleet.WithCommand(func(ctx context.Context, args ...string) error {
 			logger := log.FromContext(ctx)
-			logger.InfoContext(ctx, "run hello cli")
+			logger.InfoContext(ctx, "run hello cli", "args", args)
 			time.Sleep(5 * time.Second)
 			logger.InfoContext(ctx, "run hello cli success")
 			return nil
