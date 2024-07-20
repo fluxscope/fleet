@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"emperror.dev/emperror"
 	"github.com/fluxscope/fleet/pkg/log"
 	"github.com/fluxscope/fleet/pkg/zap"
 	configpb "github.com/fluxscope/fleet/proto/config"
@@ -12,16 +13,19 @@ import (
 )
 
 type App struct {
-	id               string
-	services         map[string]Service
-	buildInfo        BuildInfo
-	ctx              context.Context
-	cancelCtx        context.CancelFunc
-	shutdownTimeout  time.Duration
-	logger           *slog.Logger
-	beforeStartHooks []Hook
-	afterStartHooks  []Hook
-	beforeStopHooks  []Hook
+	id                string
+	services          map[string]Service
+	buildInfo         BuildInfo
+	ctx               context.Context
+	cancelCtx         context.CancelFunc
+	shutdownTimeout   time.Duration
+	logger            *slog.Logger
+	beforeStartHooks  []Hook
+	onStartingHooks   []Hook
+	onStoppingHooks   []Hook
+	afterStoppedHooks []Hook
+	command           Hook
+	waitTime          time.Duration
 }
 
 type Option func(*App)
@@ -29,6 +33,13 @@ type Option func(*App)
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *App) {
 		a.logger = logger
+	}
+}
+
+func WithCommand(cmd Hook, waiting time.Duration) Option {
+	return func(app *App) {
+		app.waitTime = waiting
+		app.command = cmd
 	}
 }
 
@@ -63,15 +74,21 @@ func WithBeforeStartHooks(hooks ...Hook) Option {
 	}
 }
 
-func WithAfterStartHooks(hooks ...Hook) Option {
+func WithOnStartingHooks(hooks ...Hook) Option {
 	return func(a *App) {
-		a.afterStartHooks = append(a.afterStartHooks, hooks...)
+		a.onStartingHooks = append(a.onStartingHooks, hooks...)
 	}
 }
 
-func WithBeforeStopHooks(hooks ...Hook) Option {
+func WithOnStoppingHooks(hooks ...Hook) Option {
 	return func(a *App) {
-		a.beforeStopHooks = append(a.beforeStopHooks, hooks...)
+		a.onStoppingHooks = append(a.onStoppingHooks, hooks...)
+	}
+}
+
+func WithAfterStoppedHooks(hooks ...Hook) Option {
+	return func(a *App) {
+		a.afterStoppedHooks = append(a.afterStoppedHooks, hooks...)
 	}
 }
 
@@ -97,8 +114,12 @@ type BuildInfo struct {
 	Version string
 }
 
-func (app *App) Run() {
+func (app *App) runHook(h Hook) error {
+	ctx := log.Context(app.ctx, app.logger)
+	return h(ctx)
+}
 
+func (app *App) initLogger() {
 	if app.logger == nil {
 		slogger, err := zap.NewSLogger(&configpb.Logging{
 			Level: "DEBUG",
@@ -115,52 +136,98 @@ func (app *App) Run() {
 		app.logger = slogger
 	}
 	slog.SetDefault(app.logger)
+}
+
+func (app *App) loadConfig() error {
+	return nil
+}
+
+func (app *App) RunE() error {
+	if err := app.loadConfig(); err != nil {
+		return err
+	}
+
+	app.initLogger()
 
 	var group run.Group
-	defers := []func() error{}
 
 	for _, svc := range app.services {
 		group.Add(func() error {
 			ctx := log.Context(app.ctx, app.logger)
 			return svc.Run(ctx)
 		}, func(err error) {
-			app.logger.Error("failed to run service", "error", err)
-
+			app.logger.Warn("shutdown service", "cause", err)
 			ctx, cancelCtx := context.WithTimeout(context.Background(), app.shutdownTimeout)
 			defer cancelCtx()
 			if err := svc.Shutdown(ctx); err != nil {
-				app.logger.ErrorContext(ctx, "failed to shutdown service", "error", err)
+				app.logger.Error("failed to shutdown service", "error", err)
 			}
 		})
 	}
-	defer func() {
-		for _, df := range defers {
-			_ = df()
-		}
-	}()
 
 	group.Add(run.SignalHandler(context.Background(), syscall.SIGINT, syscall.SIGTERM))
 
-	group.Add(func() error {
-		for _, h := range app.afterStartHooks {
-			ctx := log.Context(app.ctx, app.logger)
-			if err := h(ctx); err != nil {
-				return err
-			}
-		}
-		select {}
-	}, func(err error) {
-		for _, h := range app.beforeStopHooks {
-			_ = h(context.Background())
-		}
-	})
+	group.Add(app.HookHandler())
+	group.Add(app.CommandHandler())
+
+	// hook
 	for _, h := range app.beforeStartHooks {
-		ctx := log.Context(app.ctx, app.logger)
-		if err := h(ctx); err != nil {
-			panic(err)
+		if err := app.runHook(h); err != nil {
+			return err
 		}
 	}
 
 	err := group.Run()
-	panic(err)
+	app.cancelCtx()
+	// hook
+	for _, h := range app.afterStoppedHooks {
+		if err := app.runHook(h); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (app *App) Run() {
+	emperror.Panic(app.RunE())
+}
+
+func (app *App) HookHandler() (execute func() error, interrupt func(error)) {
+	ctx, cancel := context.WithCancel(app.ctx)
+	return func() error {
+			for _, h := range app.onStartingHooks {
+				if err := app.runHook(h); err != nil {
+					return err
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			}
+		}, func(err error) {
+			ctx, cancelCtx := context.WithTimeout(context.Background(), app.shutdownTimeout)
+			defer cancelCtx()
+			for _, h := range app.onStoppingHooks {
+				_ = h(log.Context(ctx, app.logger))
+			}
+			cancel()
+		}
+}
+
+func (app *App) CommandHandler() (execute func() error, interrupt func(error)) {
+	ctx, cancel := context.WithCancel(app.ctx)
+	return func() error {
+			if app.command != nil {
+				if app.waitTime != 0 {
+					time.Sleep(app.waitTime)
+				}
+				return app.command(log.Context(ctx, app.logger))
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			}
+		}, func(error) {
+			cancel()
+		}
 }
