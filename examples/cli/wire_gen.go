@@ -12,8 +12,9 @@ import (
 
 // Injectors from wire.go:
 
-func wireApp() (*fleet.App, func(), error) {
-	app := NewApp()
-	return app, func() {
+func wireApp() (*fleet.Console, func(), error) {
+	command := NewCommand()
+	console := NewApp(command)
+	return console, func() {
 	}, nil
 }

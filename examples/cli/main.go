@@ -16,7 +16,7 @@ func main() {
 				panic(err)
 			}
 			defer cancel()
-			return app.RunE(args...)
+			return app.RunE(args)
 		},
 	}
 

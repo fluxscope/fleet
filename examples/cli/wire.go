@@ -8,9 +8,7 @@ import (
 	"github.com/google/wire"
 )
 
-//go:generate wire
-
-func wireApp() (*fleet.App, func(), error) {
+func wireApp() (*fleet.Console, func(), error) {
 	wire.Build(ProvideSet)
-	return &fleet.App{}, nil, nil
+	return &fleet.Console{}, nil, nil
 }

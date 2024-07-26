@@ -4,40 +4,36 @@ import (
 	"context"
 	"github.com/fluxscope/fleet"
 	"github.com/fluxscope/fleet/pkg/log"
+	"github.com/fluxscope/fleet/pkg/runx"
 	"github.com/google/wire"
-	"time"
 )
 
-var ProvideSet = wire.NewSet(NewApp)
+//go:generate wire
 
-func NewApp() *fleet.App {
-	return fleet.NewApp(
-		fleet.WithCommand(func(ctx context.Context, args ...string) error {
-			logger := log.FromContext(ctx)
-			logger.InfoContext(ctx, "run hello cli", "args", args)
-			time.Sleep(5 * time.Second)
-			logger.InfoContext(ctx, "run hello cli success")
-			return nil
-		}, 1*time.Second),
-		fleet.WithBeforeStartHooks(func(ctx context.Context) error {
-			logger := log.FromContext(ctx)
-			logger.Info("before start hook")
-			return nil
-		}),
-		fleet.WithOnStartingHooks(func(ctx context.Context) error {
-			logger := log.FromContext(ctx)
-			logger.Info("on starting hook")
-			return nil
-		}),
-		fleet.WithOnStoppingHooks(func(ctx context.Context) error {
-			logger := log.FromContext(ctx)
-			logger.Info("on stopping hook")
-			return nil
-		}),
-		fleet.WithAfterStoppedHooks(func(ctx context.Context) error {
-			logger := log.FromContext(ctx)
-			logger.Info("after stopped hook")
-			return nil
-		}),
+var ProvideSet = wire.NewSet(NewApp, NewCommand)
+
+func NewApp(cmd fleet.Command) *fleet.Console {
+	return fleet.NewConsole(
+		cmd,
+		fleet.WithService(&service{}),
 	)
+}
+
+var _ fleet.Service = new(service)
+
+type service struct {
+}
+
+func (s *service) ID() string {
+	return "hello-test"
+}
+
+func (s *service) Run(ctx context.Context) error {
+	logger := log.FromContext(ctx)
+	logger.ErrorContext(ctx, "hello service run")
+	return runx.RunForever(ctx)
+}
+
+func (s *service) Shutdown(ctx context.Context) error {
+	return nil
 }

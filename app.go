@@ -24,8 +24,6 @@ type App struct {
 	onStartingHooks   []Hook
 	onStoppingHooks   []Hook
 	afterStoppedHooks []Hook
-	command           Command
-	waitTime          time.Duration
 	configPath        string
 }
 
@@ -40,13 +38,6 @@ func WithConfigPath(path string) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *App) {
 		a.logger = logger
-	}
-}
-
-func WithCommand(cmd Command, waiting time.Duration) Option {
-	return func(app *App) {
-		app.waitTime = waiting
-		app.command = cmd
 	}
 }
 
@@ -149,7 +140,27 @@ func (app *App) loadConfig() error {
 	return nil
 }
 
-func (app *App) RunE(args ...string) error {
+func (app *App) shutdownCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), app.shutdownTimeout)
+}
+
+func (app *App) serviceHandler(svc Service) (execute func() error, interrupt func(error)) {
+	ctx, cancel := context.WithCancel(app.ctx)
+	return func() error {
+			ctx := log.Context(ctx, app.logger)
+			return svc.Run(ctx)
+		}, func(err error) {
+			app.logger.Warn("shutdown service", "cause", err)
+			defer cancel()
+			ctx, cancelCtx := app.shutdownCtx()
+			defer cancelCtx()
+			if err := svc.Shutdown(ctx); err != nil {
+				app.logger.Error("failed to shutdown service", "error", err)
+			}
+		}
+}
+
+func (app *App) RunE() error {
 	if err := app.loadConfig(); err != nil {
 		return err
 	}
@@ -157,25 +168,14 @@ func (app *App) RunE(args ...string) error {
 	app.initLogger()
 
 	var group run.Group
-
 	for _, svc := range app.services {
-		group.Add(func() error {
-			ctx := log.Context(app.ctx, app.logger)
-			return svc.Run(ctx)
-		}, func(err error) {
-			app.logger.Warn("shutdown service", "cause", err)
-			ctx, cancelCtx := context.WithTimeout(context.Background(), app.shutdownTimeout)
-			defer cancelCtx()
-			if err := svc.Shutdown(ctx); err != nil {
-				app.logger.Error("failed to shutdown service", "error", err)
-			}
-		})
+		svc := svc
+		group.Add(app.serviceHandler(svc))
 	}
 
 	group.Add(run.SignalHandler(context.Background(), syscall.SIGINT, syscall.SIGTERM))
 
 	group.Add(app.hookHandler())
-	group.Add(app.commandHandler())
 
 	// hook
 	for _, h := range app.beforeStartHooks {
@@ -217,24 +217,6 @@ func (app *App) hookHandler() (execute func() error, interrupt func(error)) {
 			for _, h := range app.onStoppingHooks {
 				_ = h(log.Context(ctx, app.logger))
 			}
-			cancel()
-		}
-}
-
-func (app *App) commandHandler(args ...string) (execute func() error, interrupt func(error)) {
-	ctx, cancel := context.WithCancel(app.ctx)
-	return func() error {
-			if app.command != nil {
-				if app.waitTime != 0 {
-					time.Sleep(app.waitTime)
-				}
-				return app.command(log.Context(ctx, app.logger), args...)
-			}
-			select {
-			case <-ctx.Done():
-				return nil
-			}
-		}, func(error) {
 			cancel()
 		}
 }
